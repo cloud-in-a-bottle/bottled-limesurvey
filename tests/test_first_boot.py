@@ -4,15 +4,16 @@ The app is public (public_paths = ["/"]): anonymous respondents reach surveys,
 while the owner is auto-logged into the admin panel via the router-injected
 X-OpenHost-Is-Owner header (Authwebserver plugin).
 
-- ``stack.url`` goes through the mock router, which injects the owner header
-  on every request — this is the owner's view.
+- ``stack.url`` goes through the router; requests carrying the owner's router
+  session cookie (``_owner_session``) get the owner header — this is the owner's view.
 - ``stack.app_url`` hits the container directly with no header — this is the
   anonymous visitor's view.
 
 LimeSurvey builds absolute redirect URLs from HOST_INFO
 (https://{app}.{zone}), which is correct in production but not reachable from
 the test host, so the requests-based helpers rewrite that origin back to the
-base URL under test.
+base URL under test. It also marks its cookies Secure (Apache sets HTTPS=on),
+so the test sessions send Secure cookies over the plain-http test URLs.
 """
 
 import re
@@ -27,7 +28,27 @@ LOGIN_PATH = "/index.php/admin/authentication/sa/login"
 
 
 def _external_origin(stack: OpenhostStack) -> str:
-    return f"https://{stack.manifest.app.name}.{stack.zone_domain}"
+    return f"https://{stack.manifest.name}.{stack.zone_domain}"
+
+
+class _Session(requests.Session):
+    """Sends Secure cookies over plain http, like a browser does for localhost."""
+
+    def prepare_request(self, request: requests.Request) -> requests.PreparedRequest:
+        for cookie in self.cookies:
+            cookie.secure = False
+        return super().prepare_request(request)
+
+
+def _owner_session(stack: OpenhostStack) -> requests.Session:
+    """A fresh session (no LimeSurvey cookies yet) carrying the owner's router login.
+
+    Copies headers too: the router only honors the owner cookie alongside browser Fetch-Metadata headers.
+    """
+    sess = _Session()
+    sess.headers.update(stack.owner_session.headers)
+    sess.cookies.update(stack.owner_session.cookies)
+    return sess
 
 
 def _get_following_redirects(
@@ -49,7 +70,7 @@ def _wait_for_sso_provisioning(stack: OpenhostStack) -> None:
     once the installer has created the schema; allow a few seconds for it."""
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        resp = _get_following_redirects(requests.Session(), stack, stack.url, "/index.php/admin")
+        resp = _get_following_redirects(_owner_session(stack), stack, stack.url, "/index.php/admin")
         if 'name="password"' not in resp.text:
             return
         time.sleep(2)
@@ -66,14 +87,14 @@ def test_health(stack: OpenhostStack) -> None:
 def test_anonymous_can_reach_survey_pages(stack: OpenhostStack) -> None:
     """No owner header (direct container access) — the survey front page must
     still be served, since respondents are anonymous."""
-    resp = _get_following_redirects(requests.Session(), stack, stack.app_url, "/")
+    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/")
     assert resp.status_code == 200
     assert "survey" in resp.text.lower()
 
 
 def test_anonymous_admin_gets_login_form(stack: OpenhostStack) -> None:
     """Without the owner header the admin panel must demand credentials."""
-    resp = _get_following_redirects(requests.Session(), stack, stack.app_url, "/index.php/admin")
+    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/index.php/admin")
     assert resp.status_code == 200
     assert 'name="password"' in resp.text, "expected the LimeSurvey login form"
 
@@ -83,7 +104,7 @@ def test_owner_is_autologged_into_admin(stack: OpenhostStack, browser: Browser) 
     no login form."""
     _wait_for_sso_provisioning(stack)
 
-    sess = requests.Session()
+    sess = _owner_session(stack)
     resp = _get_following_redirects(sess, stack, stack.url, "/index.php/admin")
     assert resp.status_code == 200
     assert 'name="password"' not in resp.text, "owner hit the login form — SSO failed"
@@ -114,13 +135,13 @@ def test_owner_root_redirects_to_admin(stack: OpenhostStack) -> None:
     # The Location must be the absolute external origin — the router forwards
     # with an internal Host header and doesn't rewrite Location, so anything
     # Host-derived would send the browser to 127.0.0.1.
-    hop = requests.get(stack.url + "/", allow_redirects=False, timeout=30)
+    hop = _owner_session(stack).get(stack.url + "/", allow_redirects=False, timeout=30)
     assert hop.status_code == 302
     assert hop.headers["Location"] == _external_origin(stack) + "/index.php/admin", (
         f"redirect leaks an internal origin: {hop.headers['Location']}"
     )
 
-    resp = _get_following_redirects(requests.Session(), stack, stack.url, "/")
+    resp = _get_following_redirects(_owner_session(stack), stack, stack.url, "/")
     assert resp.status_code == 200
     assert "/dashboard/" in resp.url, f"owner did not land on the dashboard: {resp.url}"
     assert 'name="password"' not in resp.text
@@ -131,7 +152,7 @@ def test_site_contact_is_seeded(stack: OpenhostStack) -> None:
     replaces LimeSurvey's placeholder with the owner's name/email."""
     _wait_for_sso_provisioning(stack)  # same provisioning pass seeds the contact
 
-    resp = _get_following_redirects(requests.Session(), stack, stack.app_url, "/")
+    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/")
     assert resp.status_code == 200
     assert "your-email@example.net" not in resp.text, "placeholder email still showing"
     assert "Your Name" not in resp.text, "placeholder site admin name still showing"
@@ -149,7 +170,7 @@ def test_editor_rest_api_works_through_router(stack: OpenhostStack) -> None:
 
     _wait_for_sso_provisioning(stack)
 
-    sess = requests.Session()
+    sess = _owner_session(stack)
     resp = _get_following_redirects(sess, stack, stack.url, "/index.php/admin")
     assert resp.status_code == 200
 
@@ -162,7 +183,7 @@ def test_editor_rest_api_works_through_router(stack: OpenhostStack) -> None:
     assert raw, "editorLink did not set the LS_AUTH_INIT token cookie"
     token = json.loads(unquote(raw))["token"]
 
-    rest = requests.get(
+    rest = _owner_session(stack).get(
         stack.url + "/rest/v1/user-permissions",
         headers={"Authorization": f"Bearer {token}"},
         timeout=30,
@@ -178,7 +199,7 @@ def test_anonymous_password_login_still_works(stack: OpenhostStack) -> None:
     default auth method), e.g. for additional admin users."""
     admin_password = (stack.data_dir / "secrets" / "admin_password").read_text().strip()
 
-    sess = requests.Session()
+    sess = _Session()
     login = _get_following_redirects(sess, stack, stack.app_url, "/index.php/admin")
     assert login.status_code == 200
 
