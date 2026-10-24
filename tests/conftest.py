@@ -1,8 +1,8 @@
 """Shared pytest fixtures.
 
 Builds the LimeSurvey container (with its bundled MariaDB) and fronts it with
-the mock OpenHost router, which injects ``X-OpenHost-Is-Owner: true`` exactly
-like the real router does for the authenticated compute-space owner.
+the real OpenHost router, which injects ``X-OpenHost-Is-Owner: true`` for
+requests carrying the owner's session cookie.
 """
 
 from collections.abc import Iterator
@@ -17,7 +17,7 @@ def stack() -> Iterator[OpenhostStack]:
     # First boot initializes the MariaDB data directory and runs LimeSurvey's
     # CLI installer (creates ~200 tables), so give it a generous window. The
     # /health.php readiness probe only passes once the schema is installed.
-    with OpenhostStack(readiness_timeout=300) as s:
+    with OpenhostStack(deploy_timeout=300) as s:
         yield s
 
 
