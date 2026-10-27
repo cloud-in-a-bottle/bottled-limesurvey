@@ -89,7 +89,9 @@ def test_anonymous_can_reach_survey_pages(stack: OpenhostStack) -> None:
     """Anonymous visitors get through the router (public_paths = ["/"]) to the
     survey front page, since respondents are anonymous."""
     resp = _get_following_redirects(_Session(), stack, stack.url, "/")
-    assert resp.status_code == 200, f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+    assert resp.status_code == 200 and resp.url.startswith(stack.url), (
+        f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+    )
     assert "survey" in resp.text.lower()
 
 
@@ -101,7 +103,10 @@ def test_anonymous_admin_gets_login_form(stack: OpenhostStack) -> None:
         sess = _Session()
         sess.headers.update(headers)
         resp = _get_following_redirects(sess, stack, stack.url, "/index.php/admin")
-        assert resp.status_code == 200, f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+        # LimeSurvey's own login form, not the router's.
+        assert resp.status_code == 200 and resp.url.startswith(stack.url), (
+            f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+        )
         assert 'name="password"' in resp.text, f"expected the LimeSurvey login form with {headers}"
 
 
