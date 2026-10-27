@@ -124,7 +124,7 @@ SetEnv HTTPS on
 # http://127.0.0.1:<port>/admin/. Serve directories via their DirectoryIndex
 # instead of redirecting (Indexes off so this can't expose a listing).
 <Directory /var/www/html>
-    DirectorySlash Off
+    DirectorySlash On
     Options -Indexes
 </Directory>
 EOF

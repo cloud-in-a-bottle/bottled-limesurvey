@@ -13,7 +13,7 @@ health_check = "/health.php"
 # protected by LimeSurvey's own auth: the owner is logged in automatically via
 # the router's X-OpenHost-Is-Owner header (which the router strips from client
 # requests, so it can't be spoofed); everyone else gets a login form.
-public_paths = ["/"]
+public_paths = ["/health.php"]
 
 [resources]
 memory_mb = 1024
