@@ -6,8 +6,9 @@ X-OpenHost-Is-Owner header (Authwebserver plugin).
 
 - ``stack.url`` goes through the router; requests carrying the owner's router
   session cookie (``_owner_session``) get the owner header — this is the owner's view.
-- ``stack.app_url`` hits the container directly with no header — this is the
-  anonymous visitor's view.
+- requests without that cookie are the anonymous visitor's view (the app is
+  public, so the router passes them through without the owner header).
+  ``stack.app_url`` hits the container directly, bypassing the router.
 
 LimeSurvey builds absolute redirect URLs from HOST_INFO
 (https://{app}.{zone}), which is correct in production but not reachable from
@@ -85,18 +86,28 @@ def test_health(stack: OpenhostStack) -> None:
 
 
 def test_anonymous_can_reach_survey_pages(stack: OpenhostStack) -> None:
-    """No owner header (direct container access) — the survey front page must
-    still be served, since respondents are anonymous."""
-    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/")
-    assert resp.status_code == 200
+    """Anonymous visitors get through the router (public_paths = ["/"]) to the
+    survey front page, since respondents are anonymous."""
+    resp = _get_following_redirects(_Session(), stack, stack.url, "/")
+    assert resp.status_code == 200 and resp.url.startswith(stack.url), (
+        f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+    )
     assert "survey" in resp.text.lower()
 
 
 def test_anonymous_admin_gets_login_form(stack: OpenhostStack) -> None:
-    """Without the owner header the admin panel must demand credentials."""
-    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/index.php/admin")
-    assert resp.status_code == 200
-    assert 'name="password"' in resp.text, "expected the LimeSurvey login form"
+    """Without the owner's router login the admin panel must demand
+    credentials, even when the visitor forges the owner header."""
+    _wait_for_sso_provisioning(stack)  # the forged header would only matter once SSO is on
+    for headers in ({}, {"X-OpenHost-Is-Owner": "true"}):
+        sess = _Session()
+        sess.headers.update(headers)
+        resp = _get_following_redirects(sess, stack, stack.url, "/index.php/admin")
+        # LimeSurvey's own login form, not the router's.
+        assert resp.status_code == 200 and resp.url.startswith(stack.url), (
+            f"{resp.status_code} at {resp.url}: {resp.text[:500]}"
+        )
+        assert 'name="password"' in resp.text, f"expected the LimeSurvey login form with {headers}"
 
 
 def test_owner_is_autologged_into_admin(stack: OpenhostStack, browser: Browser) -> None:
@@ -150,13 +161,46 @@ def test_owner_root_redirects_to_admin(stack: OpenhostStack) -> None:
 def test_site_contact_is_seeded(stack: OpenhostStack) -> None:
     """The empty public survey list shows the site contact; the provisioner
     replaces LimeSurvey's placeholder with the owner's name/email."""
-    _wait_for_sso_provisioning(stack)  # same provisioning pass seeds the contact
-
-    resp = _get_following_redirects(_Session(), stack, stack.app_url, "/")
+    # The provisioner seeds it in the background once the installer is done, so
+    # poll: on a slow runner the page can be requested before that.
+    deadline = time.monotonic() + 120
+    while True:
+        resp = _get_following_redirects(_Session(), stack, stack.app_url, "/")
+        seeded = (
+            resp.status_code == 200
+            and "your-email@example.net" not in resp.text
+            and "Your Name" not in resp.text
+            and stack.owner_username in resp.text
+        )
+        if seeded or time.monotonic() > deadline:
+            break
+        time.sleep(2)
     assert resp.status_code == 200
     assert "your-email@example.net" not in resp.text, "placeholder email still showing"
     assert "Your Name" not in resp.text, "placeholder site admin name still showing"
     assert stack.owner_username in resp.text
+
+
+def test_admin_directory_link_stays_external(stack: OpenhostStack) -> None:
+    """The editor's home link is /admin, a real directory: Apache's mod_dir
+    would 301 it to /admin/ on the internal host (DirectorySlash Off fixes it)."""
+    _wait_for_sso_provisioning(stack)
+
+    resp = _owner_session(stack).get(stack.url + "/admin", allow_redirects=False, timeout=30)
+    location = resp.headers.get("Location", "")
+    assert "127.0.0.1" not in location, f"/admin redirects to the internal host: {location}"
+    if resp.status_code in (301, 302, 303):
+        assert location.startswith((_external_origin(stack), "/")), f"/admin redirects to {location}"
+
+
+def test_state_in_app_data(stack: OpenhostStack) -> None:
+    """The bundled MariaDB and LimeSurvey's upload dir live in the app data
+    dir, not in the container."""
+    _wait_for_sso_provisioning(stack)
+
+    # Only check the top-level dirs: what's inside belongs to the container's mysql/www-data users.
+    assert (stack.data_dir / "mysql").is_dir(), "no MariaDB datadir in the app data dir"
+    assert (stack.data_dir / "upload").is_dir(), "upload/ wasn't moved to the app data dir"
 
 
 def test_editor_rest_api_works_through_router(stack: OpenhostStack) -> None:

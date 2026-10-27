@@ -129,16 +129,27 @@ SetEnv HTTPS on
 </Directory>
 EOF
 
-# Provision LimeSurvey settings once the schema exists (the installer runs
-# after apache starts, so poll in the background):
+# Provision LimeSurvey settings once the installer has finished (it runs in
+# the upstream entrypoint, started below, so poll in the background). Wait for
+# its last step, granting the admin superadmin: it creates lime_plugins
+# long before lime_settings_global and its default plugin rows, so provisioning
+# as soon as lime_plugins exists could fail on the missing settings table
+# (leaving the site contact unseeded) or race the installer's own
+# Authwebserver row.
 # - Activate + configure the Authwebserver plugin for owner SSO.
 #   is_default=false keeps password login as fallback when the header is absent.
 # - Seed the site contact (shown on public pages) in place of LimeSurvey's
 #   "Your Name (your-email@example.net)" placeholder. Only missing rows and
 #   untouched placeholders are written, so UI edits stick.
+installer_done() {
+    local n
+    n="$(mariadb --socket="$SOCK" limesurvey -N -e \
+        "SELECT COUNT(*) FROM lime_permissions WHERE permission = 'superadmin'" 2> /dev/null)" || return 1
+    [ "${n:-0}" -gt 0 ]
+}
 provision_limesurvey() {
     for _ in $(seq 1 300); do
-        if mariadb --socket="$SOCK" limesurvey -N -e "SELECT 1 FROM lime_plugins LIMIT 1" > /dev/null 2>&1; then
+        if installer_done; then
             mariadb --socket="$SOCK" limesurvey <<'SQL'
 INSERT INTO lime_plugins (name, plugin_type, active, priority)
 SELECT 'Authwebserver', 'core', 1, 0
