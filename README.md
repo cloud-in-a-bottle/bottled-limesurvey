@@ -16,6 +16,8 @@ First boot initializes MariaDB and runs LimeSurvey's CLI installer (~200
 tables), which takes a minute or two. `/health.php` returns 200 once the
 schema is installed.
 
+`cloudinabottle.toml` sets `prebuilt_image`, so Cloud in a Bottle pulls our signed prebuilt image (built by CI from each release tag) instead of building the Dockerfile. To fork and modify this app, comment out `prebuilt_image` so your instance builds from source.
+
 ## Access model
 
 The app is public (`public_paths = ["/"]`) so anonymous respondents can take
