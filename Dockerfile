@@ -1,7 +1,7 @@
 # martialblog/limesurvey is the Docker image referenced by LimeSurvey's own
 # docs; it builds from the official github.com/LimeSurvey/LimeSurvey release
-# tags (this tag = LimeSurvey 7.5.1). Apache + PHP, runs as www-data on 8080.
-FROM docker.io/martialblog/limesurvey:7.5.1-261007-apache@sha256:7a35ba0aafd8f24732a3b301cc123a7948da9650f0e7d40dbd3237b4b90ed2b6
+# tags (this tag = LimeSurvey 7.9.0). Apache + PHP, runs as www-data on 8080.
+FROM docker.io/martialblog/limesurvey:7.9.0-261029-apache@sha256:eed076832dad0b73fb7e50f6943d0031964687bc9ac58830cdfb37f3494fb536
 
 USER root
 
