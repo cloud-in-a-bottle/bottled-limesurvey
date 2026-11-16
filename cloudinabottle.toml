@@ -1,6 +1,7 @@
 [app]
 name = "limesurvey"
-version = "1.1.0"
+version = "1.1.1"
+release_tag_format = "semver"
 description = "LimeSurvey survey platform (github.com/LimeSurvey/LimeSurvey) with bundled MariaDB"
 
 [runtime.container]
